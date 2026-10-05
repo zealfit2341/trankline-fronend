@@ -1,6 +1,7 @@
 import React from 'react'
 import { Activity, BusFront, ChevronDown, Clock3, Crosshair, Gauge, Layers3, LocateFixed, MoreHorizontal, Navigation, Pause, Play, Radio, Route, ShieldCheck, Signal, SlidersHorizontal, Sparkles, Square, X, Zap } from 'lucide-react'
 import RealCampusMap, { type MapRequest, type MapShuttle, type UserLocation } from '../../RealMap'
+import MapViewControls from '../../MapViewControls'
 import TripMessaging from '../../TripMessaging'
 import SeatBoarding from '../../SeatBoarding'
 import type { ApiRouteDetails, SessionUser } from '../../api'
@@ -39,6 +40,8 @@ type LiveTrackingPageProps = {
 }
 
 export default function LiveTrackingPage({ user, notify, showSimulator, setShowSimulator, shareLiveView, routeStats, shuttles, selectedRouteDetails, simState, simSpeed, setSimSpeed, selected, startSimulation, setSimState, stopSimulation, isFocused, gpsState, gpsMessage, locateMe, liveShuttles, nearbyShuttles, selectedId, setSelectedId, mapRequest, setMapRequest, userLocation, mapRouteDetails, trackSelected, viewFullRoute, visibleStops }: LiveTrackingPageProps) {
+  const mapCardRef = React.useRef<HTMLDivElement>(null)
+  const [mapPip, setMapPip] = React.useState(false)
   return <>
 <div className="page-heading">
             <div>
@@ -62,10 +65,10 @@ export default function LiveTrackingPage({ user, notify, showSimulator, setShowS
           {showSimulator && <SimulatorPanel simState={simState} simSpeed={simSpeed} setSimSpeed={setSimSpeed} vehicleId={selected.id} routeName={selected.route} start={startSimulation} pause={() => setSimState('paused')} resume={() => setSimState('running')} stop={stopSimulation} close={() => setShowSimulator(false)} />}
 
           <section className={`tracking-layout ${isFocused ? 'focused' : ''}`}>
-            <div className="map-card">
+            <div ref={mapCardRef} className={`map-card${mapPip ? ' map-pip' : ''}`}>
               <div className="map-toolbar">
                 <div className="map-title"><div className="map-title-icon"><Layers3 size={17} /></div><div><strong>Live campus map</strong><span>GPS route view · live shuttle positions</span></div></div>
-                <div className="map-tools"><span className={`gps-chip ${gpsState}`}><i />{gpsState === 'live' ? 'PHONE GPS LIVE' : gpsState === 'requesting' ? 'LOCATING…' : gpsState === 'demo' ? 'DEMO LOCATION' : 'GPS OFF'}</span><button className="tool-button active" onClick={() => notify('Map layers are visible')}><Layers3 size={16} /></button><button className="tool-button" onClick={locateMe} title="Locate me"><Crosshair size={16} /></button><button className="tool-button" onClick={() => notify('Use the +/- controls on the map to zoom')}><SlidersHorizontal size={16} /></button></div>
+                <div className="map-tools"><span className={`gps-chip ${gpsState}`}><i />{gpsState === 'live' ? 'PHONE GPS LIVE' : gpsState === 'requesting' ? 'LOCATING…' : gpsState === 'demo' ? 'DEMO LOCATION' : 'GPS OFF'}</span><button className="tool-button active" onClick={() => notify('Map layers are visible')}><Layers3 size={16} /></button><button className="tool-button" onClick={locateMe} title="Locate me"><Crosshair size={16} /></button><button className="tool-button" onClick={() => notify('Use the +/- controls on the map to zoom')}><SlidersHorizontal size={16} /></button><MapViewControls targetRef={mapCardRef} pipMode={mapPip} onPipChange={setMapPip} /></div>
               </div>
               <div className="map-canvas">
                 <RealCampusMap shuttles={liveShuttles} selectedId={selectedId} onSelect={(id) => { setSelectedId(id); setMapRequest({ type: 'shuttle', id: Date.now(), targetId: id }) }} userLocation={userLocation} mapRequest={mapRequest} routeDetails={mapRouteDetails} />

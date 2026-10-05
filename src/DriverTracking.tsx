@@ -37,8 +37,35 @@ function phoneHeading(event: DeviceOrientationEvent) {
   return normalizeHeading(360 - Number(event.alpha) + screenAngle)
 }
 
+function routeFromCurrentLocation(location: DeviceLocation, geometry: Coordinate[]) {
+  if (geometry.length < 2) return geometry
+  let nearestIndex = 0
+  let nearestDistance = Number.POSITIVE_INFINITY
+  const longitudeScale = 111320 * Math.cos(location.latitude * Math.PI / 180)
+  for (let index = 0; index < geometry.length; index += 1) {
+    const latitudeDistance = (geometry[index][0] - location.latitude) * 111320
+    const longitudeDistance = (geometry[index][1] - location.longitude) * longitudeScale
+    const distance = latitudeDistance * latitudeDistance + longitudeDistance * longitudeDistance
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearestIndex = index
+    }
+  }
+  return [[location.latitude, location.longitude] as Coordinate, ...geometry.slice(nearestIndex)]
+}
+
 function DriverMapController({ location, points, navigationMode }: { location: DeviceLocation | null; points: [number, number][]; navigationMode: boolean }) {
   const map = useMap()
+  useEffect(() => {
+    const refreshMap = () => map.invalidateSize({ pan: false, debounceMoveend: true })
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(refreshMap) : null
+    observer?.observe(map.getContainer())
+    window.addEventListener('resize', refreshMap)
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', refreshMap)
+    }
+  }, [map])
   useEffect(() => {
     if (navigationMode && location) {
       // Navigation mode keeps the live vehicle close-up and follows it as the
@@ -57,16 +84,17 @@ export function DriverMap({ location, route, nextStop, reroutedGeometry }: { loc
   const orderedStops = useMemo(() => route?.stops.filter((stop) => Number(stop.is_active) !== 0).slice().sort((a, b) => a.sequence - b.sequence) || [], [route])
   const points = useMemo<[number, number][]>(() => {
     if (!route) return []
-    if (reroutedGeometry && reroutedGeometry.length > 1) return reroutedGeometry
+    if (reroutedGeometry && reroutedGeometry.length > 1) return location ? routeFromCurrentLocation(location, reroutedGeometry) : reroutedGeometry
+    const savedGeometry = parseRouteGeometry(route.route.route_geometry)
+    // Keep the stored road-shaped geometry visible while a live reroute is
+    // loading or unavailable. A straight line is only the final fallback.
+    if (savedGeometry.length > 1) return location ? routeFromCurrentLocation(location, savedGeometry) : savedGeometry
     const destination: Coordinate = [Number(route.route.destination_latitude), Number(route.route.destination_longitude)]
     if (location && Number.isFinite(destination[0]) && Number.isFinite(destination[1])) {
-      // Keep a visible line while road routing is loading or temporarily unavailable.
       const remainingStops = orderedStops.map((stop) => ({ pickup_name: stop.pickup_name, latitude: Number(stop.latitude), longitude: Number(stop.longitude), sequence: stop.sequence }))
       const liveFallback = routeWaypointsToNextStop([location.latitude, location.longitude], remainingStops, destination, nextStop)
       if (liveFallback.length > 1) return liveFallback
     }
-    const savedGeometry = parseRouteGeometry(route.route.route_geometry)
-    if (savedGeometry.length > 1) return savedGeometry
     return [
       ...(route.route.start_latitude !== null && route.route.start_latitude !== undefined && route.route.start_longitude !== null && route.route.start_longitude !== undefined ? [[Number(route.route.start_latitude), Number(route.route.start_longitude)] as [number, number]] : []),
       ...route.stops.filter((stop) => Number(stop.is_active) !== 0).slice().sort((a, b) => a.sequence - b.sequence).map((stop) => [Number(stop.latitude), Number(stop.longitude)] as [number, number]),

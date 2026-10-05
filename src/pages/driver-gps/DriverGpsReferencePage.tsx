@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Bell, BusFront, Check, ChevronDown, CircleGauge, Expand, LocateFixed, MapPin, Pause, Play, Radio, Route as RouteIcon, Sparkles, Square, Target } from 'lucide-react'
+import { Bell, BusFront, Check, ChevronDown, CircleGauge, LocateFixed, MapPin, Pause, Play, Radio, Route as RouteIcon, Sparkles, Square, Target } from 'lucide-react'
 import { api, type ApiRoute, type ApiRouteDetails, type ApiShuttle, type SessionUser } from '../../api'
 import { DriverMap } from '../../DriverTracking'
+import MapViewControls from '../../MapViewControls'
 import SeatBoarding from '../../SeatBoarding'
 import TripMessaging from '../../TripMessaging'
-import { routeWaypointsToNextStop, type Coordinate } from '../../routeUtils'
+import { routeWaypoints, type Coordinate } from '../../routeUtils'
 
 type Props = { shuttles: ApiShuttle[]; routes: ApiRoute[]; notify: (message: string) => void; user: SessionUser }
 type DeviceLocation = { latitude: number; longitude: number; accuracy: number; speed: number; heading: number }
@@ -34,9 +35,11 @@ export default function DriverGpsReferencePage({ shuttles, routes: _routes, noti
   const [starting, setStarting] = useState(false)
   const [reroutedGeometry, setReroutedGeometry] = useState<Coordinate[] | null>(null)
   const [navigationMode, setNavigationMode] = useState(false)
+  const [mapPip, setMapPip] = useState(false)
   const [nextStop, setNextStop] = useState('')
   const [error, setError] = useState('')
   const watchRef = useRef<number | null>(null)
+  const mapCardRef = useRef<HTMLElement>(null)
   const lastSentRef = useRef(0)
   const rerouteSignature = useRef('')
   const selected = shuttles.find((shuttle) => shuttle.id === selectedId) || shuttles[0]
@@ -69,14 +72,13 @@ export default function DriverGpsReferencePage({ shuttles, routes: _routes, noti
     const destination: Coordinate = [Number(route.route.destination_latitude), Number(route.route.destination_longitude)]
     if (!Number.isFinite(destination[0]) || !Number.isFinite(destination[1])) return
     const stops = route.stops.filter((stop) => Number(stop.is_active) !== 0).map((stop) => ({ pickup_name: stop.pickup_name, latitude: Number(stop.latitude), longitude: Number(stop.longitude), sequence: stop.sequence }))
-    // Refresh the road route as the phone moves roughly 100 m. The first
-    // request therefore starts exactly at TDK/current GPS and heads to Pickup
-    // Point 1, rather than reusing the saved Calamba-origin geometry.
+    // Refresh the road route as the phone moves roughly 100 m. The request
+    // starts at the live GPS point and includes every remaining stop plus TDK.
     const signature = `${route.route.id}:${nextStop || stops[0]?.pickup_name || 'route'}:${location.latitude.toFixed(3)}:${location.longitude.toFixed(3)}`
     if (rerouteSignature.current === signature) return
     rerouteSignature.current = signature
     let active = true
-    api.routeGeometry(routeWaypointsToNextStop([location.latitude, location.longitude], stops, destination, nextStop)).then((result) => {
+    api.routeGeometry(routeWaypoints([location.latitude, location.longitude], stops, destination, nextStop)).then((result) => {
       if (active) setReroutedGeometry(result.geometry)
     }).catch(() => { if (active) rerouteSignature.current = '' })
     return () => { active = false }
@@ -266,8 +268,8 @@ export default function DriverGpsReferencePage({ shuttles, routes: _routes, noti
       </aside>
 
       <main className="driver-reference-main">
-        <section className="driver-reference-card driver-reference-map-card">
-          <header className="driver-reference-map-header"><div><h2><Radio size={18} /> Live driver map</h2><p>{routeName}</p></div><div className="driver-map-toolbar"><button className={navigationMode ? 'active' : ''} onClick={toggleNavigationMode} aria-pressed={navigationMode} title={navigationMode ? 'Return to full route view' : 'Zoom in and follow the live driver'}><LocateFixed size={17} /> {navigationMode ? 'Following driver' : 'Navigation mode'}</button><button onClick={() => notify('Use your browser controls to enter map fullscreen')} aria-label="Expand map"><Expand size={17} /></button></div></header>
+        <section ref={mapCardRef} className={`driver-reference-card driver-reference-map-card${mapPip ? ' map-pip' : ''}`}>
+          <header className="driver-reference-map-header"><div><h2><Radio size={18} /> Live driver map</h2><p>{routeName}</p></div><div className="driver-map-toolbar"><button className={navigationMode ? 'active' : ''} onClick={toggleNavigationMode} aria-pressed={navigationMode} title={navigationMode ? 'Return to full route view' : 'Zoom in and follow the live driver'}><LocateFixed size={17} /> {navigationMode ? 'Following driver' : 'Navigation mode'}</button><MapViewControls targetRef={mapCardRef} pipMode={mapPip} onPipChange={setMapPip} /></div></header>
           <div className="driver-reference-map-frame"><DriverMap location={location} route={route} nextStop={nextStop} reroutedGeometry={reroutedGeometry} />{nextStop && <div className="driver-next-stop"><MapPin size={27} /><div><span>Next Stop</span><strong>{nextStop}</strong><small>{location ? 'GPS route active' : 'Waiting for GPS'} · {formatOffset(orderedStops.find((stop) => stop.pickup_name === nextStop)?.estimated_arrival_offset)}</small></div></div>}<div className="driver-map-legend"><span><i className="start" /> Start</span><span><i className="stop" /> Stop</span><span><i className="end" /> End</span><span><i className="route" /> Route</span><span><BusFront size={16} /> Bus (Live)</span></div></div>
         </section>
 
