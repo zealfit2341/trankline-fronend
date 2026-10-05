@@ -25,7 +25,7 @@ import {
   X,
 } from 'lucide-react'
 import { getRealtimeSocket } from '../../realtime'
-import { distanceToRouteMeters, parseRouteGeometry, routeWaypoints } from '../../routeUtils'
+import { routeWaypoints } from '../../routeUtils'
 import { api, type ApiRoute, type ApiRouteDetails, type ApiStop, type ApiShuttle, type SessionUser } from '../../api'
 import { matchAppRoute } from '../router/AppRouter'
 import { sidebarPaths } from '../router/routes'
@@ -329,14 +329,14 @@ export default function Dashboard({ user, onLogout, onProfileUpdated }: { user: 
 
   useEffect(() => {
     if (!selectedRouteDetails || !selected.id || selected.id === '—') return
-    const savedGeometry = parseRouteGeometry(selectedRouteDetails.route.route_geometry)
-    if (savedGeometry.length < 2) return
     const currentLocation: [number, number] = [Number(selected.location[0]), Number(selected.location[1])]
-    if (distanceToRouteMeters(currentLocation, savedGeometry) <= 120) return
+    if (!Number.isFinite(currentLocation[0]) || !Number.isFinite(currentLocation[1])) return
     const stops = selectedRouteDetails.stops.filter((stop) => Number(stop.is_active) !== 0).map((stop) => ({ pickup_name: stop.pickup_name, latitude: Number(stop.latitude), longitude: Number(stop.longitude), sequence: stop.sequence }))
     const destination: [number, number] = [Number(selectedRouteDetails.route.destination_latitude), Number(selectedRouteDetails.route.destination_longitude)]
     if (!Number.isFinite(destination[0]) || !Number.isFinite(destination[1])) return
-    const signature = `${selectedRouteDetails.route.id}:${selected.nextStop || stops[0]?.pickup_name || 'route'}`
+    // Rebuild the road path when the shuttle has moved roughly 100 m so the
+    // visible route keeps starting at the live GPS position.
+    const signature = `${selectedRouteDetails.route.id}:${selected.nextStop || stops[0]?.pickup_name || 'route'}:${currentLocation[0].toFixed(3)}:${currentLocation[1].toFixed(3)}`
     if (rerouteSignature.current === signature) return
     rerouteSignature.current = signature
     let active = true
@@ -347,22 +347,30 @@ export default function Dashboard({ user, onLogout, onProfileUpdated }: { user: 
   }, [selected.id, selected.location[0], selected.location[1], selected.nextStop, selectedRouteDetails])
 
   const mapRouteDetails = useMemo(() => {
-    if (!selectedRouteDetails || !liveRouteGeometry) return selectedRouteDetails
-    return { ...selectedRouteDetails, route: { ...selectedRouteDetails.route, route_geometry: JSON.stringify(liveRouteGeometry) } }
-  }, [liveRouteGeometry, selectedRouteDetails])
+    if (!selectedRouteDetails) return null
+    const current: [number, number] = [Number(selected.location[0]), Number(selected.location[1])]
+    const stops = selectedRouteDetails.stops.filter((stop) => Number(stop.is_active) !== 0).map((stop) => ({ pickup_name: stop.pickup_name, latitude: Number(stop.latitude), longitude: Number(stop.longitude), sequence: stop.sequence }))
+    const destination: [number, number] = [Number(selectedRouteDetails.route.destination_latitude), Number(selectedRouteDetails.route.destination_longitude)]
+    const fallback = Number.isFinite(current[0]) && Number.isFinite(current[1]) && Number.isFinite(destination[0]) && Number.isFinite(destination[1]) && stops.length > 0
+      ? routeWaypoints(current, stops, destination, selected.nextStop)
+      : []
+    const geometry = liveRouteGeometry?.length ? liveRouteGeometry : fallback
+    if (geometry.length < 2) return selectedRouteDetails
+    return { ...selectedRouteDetails, route: { ...selectedRouteDetails.route, route_geometry: JSON.stringify(geometry) } }
+  }, [liveRouteGeometry, selected.location, selected.nextStop, selectedRouteDetails])
 
   const visibleStops = useMemo(() => {
     if (!selectedRouteDetails) return []
     const source = selectedRouteDetails.stops.filter((stop) => Number(stop.is_active) !== 0).slice().sort((a, b) => a.sequence - b.sequence)
     if (!source.length) return []
-    const serverNextIndex = selected.nextStop ? source.findIndex((stop) => stop.pickup_name === selected.nextStop) : source.length
+    const serverNextIndex = selected.nextStop ? source.findIndex((stop) => stop.pickup_name === selected.nextStop) : 0
     let nextIndex = serverNextIndex
     if (nextIndex < 0) {
       let nearestDistance = Number.POSITIVE_INFINITY
       source.forEach((stop, index) => { const distance = haversineKm(selected.location[0], selected.location[1], Number(stop.latitude), Number(stop.longitude)); if (distance < nearestDistance) { nearestDistance = distance; nextIndex = index } })
     }
     return source.map((stop, index) => ({ name: stop.pickup_name, eta: index === nextIndex ? 'next' : stop.estimated_arrival_offset ? `${stop.estimated_arrival_offset} min` : 'upcoming', state: index < nextIndex ? 'passed' : index === nextIndex ? 'current' : 'upcoming' }))
-  }, [selected.location, selectedRouteDetails])
+  }, [selected.location, selected.nextStop, selectedRouteDetails])
   const simulationRoute = useMemo<[number, number][]>(() => {
     if (!selectedRouteDetails) return []
     const route = selectedRouteDetails.route

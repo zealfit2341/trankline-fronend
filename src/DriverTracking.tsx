@@ -1,44 +1,124 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { BusFront, LocateFixed, MapPin, Pause, Play, Radio, Square } from 'lucide-react'
 import { Circle, MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import { api, type ApiRoute, type ApiRouteDetails, type ApiShuttle, type SessionUser } from './api'
 import TripMessaging from './TripMessaging'
-import { distanceToRouteMeters, parseRouteGeometry, routeWaypoints, type Coordinate } from './routeUtils'
+import { distanceToRouteMeters, parseRouteGeometry, routeWaypoints, routeWaypointsToNextStop, type Coordinate } from './routeUtils'
 
 type Props = { shuttles: ApiShuttle[]; routes: ApiRoute[]; notify: (message: string) => void; user: SessionUser }
 type DeviceLocation = { latitude: number; longitude: number; accuracy: number; speed: number; heading: number }
 type GpsPacket = DeviceLocation & { timestamp: string; clientId: string }
 
-const driverIcon = L.divIcon({ className: 'driver-live-icon', html: '<span>BUS</span>', iconSize: [46, 34], iconAnchor: [23, 17] })
+const driverIcon = (heading: number) => L.divIcon({
+  className: 'driver-live-icon',
+  html: `<span class="driver-live-arrow" style="--driver-heading:${heading}deg"></span><span class="driver-live-bus">BUS</span>`,
+  iconSize: [58, 54],
+  iconAnchor: [29, 27],
+})
 const stopIcon = (sequence: number, isNext = false) => L.divIcon({ className: `driver-stop-icon${isNext ? ' next' : ''}`, html: `<span><b>${sequence}</b></span>`, iconSize: [30, 36], iconAnchor: [15, 30] })
 
-function DriverMapController({ location, points }: { location: DeviceLocation | null; points: [number, number][] }) {
+function bearingBetween(from: [number, number], to: [number, number]) {
+  const deltaLongitude = (Math.PI / 180) * (to[1] - from[1])
+  const fromLatitude = (Math.PI / 180) * from[0]
+  const toLatitude = (Math.PI / 180) * to[0]
+  return (Math.atan2(Math.sin(deltaLongitude) * Math.cos(toLatitude), Math.cos(fromLatitude) * Math.sin(toLatitude) - Math.sin(fromLatitude) * Math.cos(toLatitude) * Math.cos(deltaLongitude)) * 180 / Math.PI + 360) % 360
+}
+
+function normalizeHeading(value: number) {
+  return (value % 360 + 360) % 360
+}
+
+function phoneHeading(event: DeviceOrientationEvent) {
+  const compassEvent = event as DeviceOrientationEvent & { webkitCompassHeading?: number | null }
+  if (Number.isFinite(compassEvent.webkitCompassHeading)) return normalizeHeading(Number(compassEvent.webkitCompassHeading))
+  if (!Number.isFinite(event.alpha)) return null
+  const screenAngle = Number(window.screen.orientation?.angle ?? (window as Window & { orientation?: number }).orientation ?? 0)
+  return normalizeHeading(360 - Number(event.alpha) + screenAngle)
+}
+
+function DriverMapController({ location, points, navigationMode }: { location: DeviceLocation | null; points: [number, number][]; navigationMode: boolean }) {
   const map = useMap()
   useEffect(() => {
-    if (location) map.setView([location.latitude, location.longitude], Math.max(map.getZoom(), 14), { animate: true })
-    else if (points.length > 1) map.fitBounds(points, { padding: [30, 30], maxZoom: 15, animate: false })
-  }, [location, map, points])
+    if (navigationMode && location) {
+      // Navigation mode keeps the live vehicle close-up and follows it as the
+      // phone sends new GPS points. The complete route remains available in
+      // the normal map view.
+      map.setView([location.latitude, location.longitude], Math.max(map.getZoom(), 17), { animate: true })
+    } else if (points.length > 1) map.fitBounds(points, { padding: [45, 45], maxZoom: 15, animate: Boolean(location) })
+    else if (location) map.setView([location.latitude, location.longitude], Math.max(map.getZoom(), 14), { animate: true })
+  }, [location, map, navigationMode, points])
   return null
 }
 
 export function DriverMap({ location, route, nextStop, reroutedGeometry }: { location: DeviceLocation | null; route: ApiRouteDetails | null; nextStop: string; reroutedGeometry: Coordinate[] | null }) {
+  const [navigationMode, setNavigationMode] = useState(false)
+  const [deviceHeading, setDeviceHeading] = useState<number | null>(null)
   const orderedStops = useMemo(() => route?.stops.filter((stop) => Number(stop.is_active) !== 0).slice().sort((a, b) => a.sequence - b.sequence) || [], [route])
   const points = useMemo<[number, number][]>(() => {
     if (!route) return []
     if (reroutedGeometry && reroutedGeometry.length > 1) return reroutedGeometry
-    if (route.route.route_geometry) {
-      try { const geometry = typeof route.route.route_geometry === 'string' ? JSON.parse(route.route.route_geometry) : route.route.route_geometry; if (Array.isArray(geometry)) return geometry } catch { /* use stops below */ }
+    const destination: Coordinate = [Number(route.route.destination_latitude), Number(route.route.destination_longitude)]
+    if (location && Number.isFinite(destination[0]) && Number.isFinite(destination[1])) {
+      // Keep a visible line while road routing is loading or temporarily unavailable.
+      const remainingStops = orderedStops.map((stop) => ({ pickup_name: stop.pickup_name, latitude: Number(stop.latitude), longitude: Number(stop.longitude), sequence: stop.sequence }))
+      const liveFallback = routeWaypointsToNextStop([location.latitude, location.longitude], remainingStops, destination, nextStop)
+      if (liveFallback.length > 1) return liveFallback
     }
+    const savedGeometry = parseRouteGeometry(route.route.route_geometry)
+    if (savedGeometry.length > 1) return savedGeometry
     return [
       ...(route.route.start_latitude !== null && route.route.start_latitude !== undefined && route.route.start_longitude !== null && route.route.start_longitude !== undefined ? [[Number(route.route.start_latitude), Number(route.route.start_longitude)] as [number, number]] : []),
       ...route.stops.filter((stop) => Number(stop.is_active) !== 0).slice().sort((a, b) => a.sequence - b.sequence).map((stop) => [Number(stop.latitude), Number(stop.longitude)] as [number, number]),
       ...(route.route.destination_latitude !== null && route.route.destination_latitude !== undefined && route.route.destination_longitude !== null && route.route.destination_longitude !== undefined ? [[Number(route.route.destination_latitude), Number(route.route.destination_longitude)] as [number, number]] : []),
     ]
-  }, [route, reroutedGeometry])
+  }, [location, nextStop, orderedStops, reroutedGeometry, route])
   const center: [number, number] = location ? [location.latitude, location.longitude] : points[0] || [12.8797, 121.774]
   const nextStopRecord = orderedStops.find((stop) => stop.pickup_name === nextStop) || orderedStops[0]
-  return <MapContainer className="driver-map" center={center} zoom={location ? 14 : 13} minZoom={8} maxZoom={19} scrollWheelZoom style={{ width: '100%', height: '100%' }}><TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" subdomains={['a', 'b', 'c']} /><DriverMapController location={location} points={points} />{points.length > 1 && <Polyline positions={points} pathOptions={{ color: '#247ff0', weight: 6, opacity: .85 }} />}{orderedStops.map((stop) => { const isNext = Boolean(nextStopRecord && stop.stop_id === nextStopRecord.stop_id); return <Marker key={stop.stop_id} position={[Number(stop.latitude), Number(stop.longitude)]} icon={stopIcon(stop.sequence, isNext)}><Tooltip direction="top" offset={[0, -24]} permanent>{isNext ? `NEXT · ${stop.sequence}. ${stop.pickup_name}` : `${stop.sequence}. ${stop.pickup_name}`}</Tooltip></Marker> })}{location && <><Circle center={[location.latitude, location.longitude]} radius={Math.max(location.accuracy, 15)} pathOptions={{ color: '#20a66e', fillColor: '#20a66e', fillOpacity: .15 }} /><Marker position={[location.latitude, location.longitude]} icon={driverIcon} /></>}</MapContainer>
+  useEffect(() => {
+    const handleNavigationMode = (event: Event) => setNavigationMode(Boolean((event as CustomEvent<boolean>).detail))
+    window.addEventListener('driver-map-navigation', handleNavigationMode)
+    return () => window.removeEventListener('driver-map-navigation', handleNavigationMode)
+  }, [])
+  useEffect(() => {
+    if (!navigationMode) {
+      setDeviceHeading(null)
+      return
+    }
+    let absoluteHeadingReceived = false
+    let lastUpdateAt = 0
+    const updateHeading = (event: Event) => {
+      const nextHeading = phoneHeading(event as DeviceOrientationEvent)
+      if (nextHeading === null || Date.now() - lastUpdateAt < 50) return
+      lastUpdateAt = Date.now()
+      setDeviceHeading((current) => {
+        if (current === null) return nextHeading
+        const delta = ((nextHeading - current + 540) % 360) - 180
+        return normalizeHeading(current + delta * .35)
+      })
+    }
+    const updateAbsoluteHeading = (event: Event) => {
+      absoluteHeadingReceived = true
+      updateHeading(event)
+    }
+    const updateRelativeHeading = (event: Event) => {
+      if (!absoluteHeadingReceived) updateHeading(event)
+    }
+    window.addEventListener('deviceorientationabsolute', updateAbsoluteHeading)
+    window.addEventListener('deviceorientation', updateRelativeHeading)
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', updateAbsoluteHeading)
+      window.removeEventListener('deviceorientation', updateRelativeHeading)
+    }
+  }, [navigationMode])
+  const fallbackTarget = nextStopRecord ? [Number(nextStopRecord.latitude), Number(nextStopRecord.longitude)] as [number, number] : points[1]
+  const routeHeading = location && fallbackTarget && Number.isFinite(fallbackTarget[0]) && Number.isFinite(fallbackTarget[1])
+    ? (location.heading > 0 ? location.heading : bearingBetween([location.latitude, location.longitude], fallbackTarget))
+    : location?.heading || 0
+  const heading = navigationMode && deviceHeading !== null ? deviceHeading : routeHeading
+  const liveIcon = useMemo(() => driverIcon(heading), [heading])
+  const mapStyle: CSSProperties & { '--driver-map-rotation'?: string } = { width: '100%', height: '100%', '--driver-map-rotation': `${navigationMode ? -heading : 0}deg` }
+  return <MapContainer className={`driver-map${navigationMode ? ' navigation-mode' : ''}`} center={center} zoom={location ? 14 : 13} minZoom={8} maxZoom={19} scrollWheelZoom style={mapStyle}><TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap contributors</a>' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" subdomains={['a', 'b', 'c']} /><DriverMapController location={location} points={points} navigationMode={navigationMode} />{points.length > 1 && <Polyline positions={points} pathOptions={{ color: '#247ff0', weight: 6, opacity: .85 }} />}{orderedStops.map((stop) => { const isNext = Boolean(nextStopRecord && stop.stop_id === nextStopRecord.stop_id); return <Marker key={stop.stop_id} position={[Number(stop.latitude), Number(stop.longitude)]} icon={stopIcon(stop.sequence, isNext)}><Tooltip direction="top" offset={[0, -24]} permanent>{isNext ? `NEXT · ${stop.sequence}. ${stop.pickup_name}` : `${stop.sequence}. ${stop.pickup_name}`}</Tooltip></Marker> })}{location && <><Circle center={[location.latitude, location.longitude]} radius={Math.max(location.accuracy, 15)} pathOptions={{ color: '#20a66e', fillColor: '#20a66e', fillOpacity: .15 }} /><Marker position={[location.latitude, location.longitude]} icon={liveIcon} /></>}</MapContainer>
 }
 
 export default function DriverTracking({ shuttles, routes, notify, user }: Props) {

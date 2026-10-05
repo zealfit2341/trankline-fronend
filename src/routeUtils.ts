@@ -43,6 +43,14 @@ export function distanceToRouteMeters(point: Coordinate, route: Coordinate[]) {
 
 export function routeWaypoints(current: Coordinate, stops: Array<{ pickup_name: string; latitude: number; longitude: number; sequence: number }>, destination: Coordinate, nextStop?: string | null) {
   const ordered = stops.slice().sort((a, b) => a.sequence - b.sequence)
-  const nextIndex = nextStop ? Math.max(0, ordered.findIndex((stop) => stop.pickup_name === nextStop)) : ordered.length
+  // When the live trip has not reported a next stop yet, the bus GPS location
+  // is the route start and pickup point 1 is the first destination.
+  const nextIndex = nextStop ? Math.max(0, ordered.findIndex((stop) => stop.pickup_name === nextStop)) : 0
   return [current, ...ordered.slice(nextIndex).map((stop) => [Number(stop.latitude), Number(stop.longitude)] as Coordinate), destination]
+}
+
+export function routeWaypointsToNextStop(current: Coordinate, stops: Array<{ pickup_name: string; latitude: number; longitude: number; sequence: number }>, destination: Coordinate, nextStop?: string | null) {
+  const ordered = stops.slice().sort((a, b) => a.sequence - b.sequence)
+  const target = nextStop ? ordered.find((stop) => stop.pickup_name === nextStop) || ordered[0] : ordered[0]
+  return target ? [current, [Number(target.latitude), Number(target.longitude)] as Coordinate] : [current, destination]
 }

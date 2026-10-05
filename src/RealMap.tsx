@@ -128,7 +128,9 @@ function LeafletCampusMap({ shuttles, selectedId, onSelect, userLocation, mapReq
   const renderedStops = (routeDetails?.stops || []).filter((stop) => Number(stop.is_active) !== 0).sort((a, b) => a.sequence - b.sequence).map((stop) => ({ ...stop, name: stop.pickup_name, location: localizeToPhone([Number(stop.latitude), Number(stop.longitude)], userLocation), eta: stop.estimated_arrival_offset ? `${stop.estimated_arrival_offset} min` : 'upcoming' }))
   const selectedShuttle = shuttles.find((shuttle) => shuttle.id === selectedId)
   const nextStop = selectedShuttle?.nextStop ? renderedStops.find((stop) => stop.name === selectedShuttle.nextStop) : null
-  const nextStopIndex = nextStop ? renderedStops.findIndex((stop) => stop.stop_id === nextStop.stop_id) : selectedShuttle?.nextStop === null ? renderedStops.length : 0
+  // A live shuttle without a reported next stop is still before pickup point
+  // 1, so keep the first stop active instead of marking every stop as passed.
+  const nextStopIndex = nextStop ? renderedStops.findIndex((stop) => stop.stop_id === nextStop.stop_id) : 0
   const renderedDestination = routeDetails?.route.destination_latitude !== null && routeDetails?.route.destination_latitude !== undefined && routeDetails?.route.destination_longitude !== null && routeDetails?.route.destination_longitude !== undefined ? localizeToPhone([Number(routeDetails.route.destination_latitude), Number(routeDetails.route.destination_longitude)], userLocation) : null
   const renderedShuttles = shuttles
 
